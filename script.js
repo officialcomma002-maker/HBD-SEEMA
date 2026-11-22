@@ -1,112 +1,69 @@
-/* Nimra Birthday Web Experience - Script Engine */
 (() => {
   'use strict';
-
-  // Helper selectors
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-  const now = () => performance.now();
+  const lerp = (a, b, t) => a + (b - a) * t;
+  function now() {
+    return performance.now();
+  }
 
-  // --------------------------
-  // Scene Flow Navigation
-  // --------------------------
   const scenes = $$('.scene');
   let sceneIndex = 0;
-
   function setScene(i) {
     sceneIndex = clamp(i, 0, scenes.length - 1);
     scenes.forEach(s => s.classList.remove('active'));
-    
     const active = scenes.find(s => Number(s.dataset.scene) === sceneIndex);
     if (active) active.classList.add('active');
-
-    // Canvas Intensity Tweak by Scene
     if (sceneIndex === 0) fx.setIntensity(0.05);
-    if (sceneIndex === 1) fx.setIntensity(0.85);
-    if (sceneIndex === 2) {
-      fx.setIntensity(0.35);
-      startSaturnSequence();
-    }
-    if (sceneIndex === 3) enterCandleScene();
-    if (sceneIndex === 4) fx.setIntensity(0.3);
-    if (sceneIndex === 5) {
-      fx.setIntensity(0.5);
-      resetCredits();
-    }
-
+    if (sceneIndex === 1) fx.setIntensity(0.9);
+    if (sceneIndex >= 2) fx.setIntensity(0.35);
     if (sceneIndex === 1) startMemoriesSequence();
+    if (sceneIndex === 2) enterCandleScene();
   }
+  function nextScene() { setScene(sceneIndex + 1); }
+  function restart() { setScene(0); }
 
-  function nextScene() {
-    setScene(sceneIndex + 1);
-  }
-
-  // --------------------------
-  // Background Audio Controller
-  // --------------------------
   const bgm = $('#bgm');
   let audioStarted = false;
-
   function startMusic() {
     if (audioStarted) return;
     audioStarted = true;
     try {
-      bgm.volume = 0.35;
-      bgm.loop = true;
+      bgm.volume = 0.22;
       const p = bgm.play();
       if (p && typeof p.catch === 'function') {
-        p.catch(() => {
-          audioStarted = false;
-        });
+        p.catch(() => { audioStarted = false; });
       }
-    } catch {
-      audioStarted = false;
-    }
+    } catch { audioStarted = false; }
   }
 
-  // --------------------------
-  // Scene 1: Memory Stagger Reveal
-  // --------------------------
   let memoriesStarted = false;
   function startMemoriesSequence() {
     if (memoriesStarted) return;
     memoriesStarted = true;
     const items = $$('.memory');
-    items.forEach((m, idx) => {
-      setTimeout(() => m.classList.add('show'), 300 + idx * 900);
+    items.forEach(m => m.classList.remove('show'));
+    const baseDelay = 280;
+    items.forEach((el, idx) => {
+      setTimeout(() => el.classList.add('show'), baseDelay + idx * 850);
     });
   }
 
-  // --------------------------
-  // Scene 2: Saturn Card Stagger Reveal
-  // --------------------------
-  let saturnStarted = false;
-  function startSaturnSequence() {
-    if (saturnStarted) return;
-    saturnStarted = true;
-    const cards = $$('.quote-card');
-    cards.forEach((c, idx) => {
-      setTimeout(() => c.classList.add('show'), 300 + idx * 800);
-    });
-  }
-
-  // --------------------------
-  // Scene 3: Candle Blow Logic (Mic + Fallback)
-  // --------------------------
   const continueBtn = $('#continueBtn');
   const flameEl = $('#flame');
   const candleEl = $('#candle');
   const blowHint = $('#blowHint');
-
-  let candleOut = false;
+  const CANDLE_KEY = 'seema_candle_out_v1';
+  let candleOut = sessionStorage.getItem(CANDLE_KEY) === '1';
 
   function setCandleOut(out) {
     candleOut = out;
     if (candleOut) {
+      sessionStorage.setItem(CANDLE_KEY, '1');
       flameEl.classList.add('off');
       continueBtn.disabled = false;
-      blowHint.style.opacity = '0.5';
+      blowHint.style.opacity = '0.72';
     } else {
       flameEl.classList.remove('off');
       continueBtn.disabled = true;
@@ -114,7 +71,6 @@
     }
   }
 
-  // Web Audio Mic Detection
   let micRequested = false;
   let audioCtx = null;
   let analyser = null;
@@ -127,7 +83,6 @@
     if (micRequested || candleOut) return;
     micRequested = true;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
-
     try {
       micStream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
@@ -141,67 +96,61 @@
       lastMicFrame = now();
       blowScore = 0;
     } catch {
-      analyser = null;
-      audioCtx = null;
+      analyser = null; audioCtx = null; micStream = null; micSource = null;
     }
   }
 
   function stopMic() {
-    try {
-      if (micStream) micStream.getTracks().forEach(t => t.stop());
-    } catch {}
+    try { if (micStream) micStream.getTracks().forEach(t => t.stop()); } catch {}
     micStream = null;
+    try { micSource && micSource.disconnect(); } catch {}
+    micSource = null;
+    try { analyser && analyser.disconnect(); } catch {}
+    analyser = null;
+    try { audioCtx && audioCtx.close(); } catch {}
+    audioCtx = null;
   }
 
   function sampleMicAndDetectBlow(t) {
     if (!analyser || candleOut) return;
     const dt = (t - lastMicFrame) / 1000;
     lastMicFrame = t;
-
     const buf = new Uint8Array(analyser.fftSize);
     analyser.getByteTimeDomainData(buf);
-
     let sum = 0;
     for (let i = 0; i < buf.length; i++) {
       const v = (buf[i] - 128) / 128;
       sum += v * v;
     }
     const rms = Math.sqrt(sum / buf.length);
-
-    const threshold = 0.065;
+    const threshold = 0.06;
     const strong = 0.12;
     const x = clamp((rms - threshold) / (strong - threshold), 0, 1);
-
-    blowScore += (x > 0 ? 3.0 * x : -1.8) * dt;
+    const rise = 3.0;
+    const decay = 1.8;
+    blowScore += (x > 0 ? rise * x : -decay) * dt;
     blowScore = clamp(blowScore, 0, 1.2);
-
-    if (blowScore >= 1.0) {
-      extinguishCandle('mic');
-    }
+    if (blowScore >= 1.0) extinguishCandle('mic');
   }
 
-  function extinguishCandle() {
+  function extinguishCandle(reason = 'fallback') {
     if (candleOut) return;
     setCandleOut(true);
     stopMic();
-    fx.celebrationBurst();
+    fx.puffAtCenter();
   }
 
-  // Click & Tap Fallback
   let lastTap = 0;
   function onFlameTap() {
     const t = now();
     const delta = t - lastTap;
     lastTap = t;
-
     const isTouch = matchMedia('(pointer: coarse)').matches;
-    if (!isTouch || delta < 350) {
-      extinguishCandle();
-    }
+    if (!isTouch) { extinguishCandle('click'); return; }
+    if (delta < 320) extinguishCandle('doubletap');
   }
 
   function enterCandleScene() {
-    fx.setIntensity(0.35);
     setCandleOut(candleOut);
     requestMicOnce();
   }
@@ -209,9 +158,6 @@
   flameEl.addEventListener('click', onFlameTap, { passive: true });
   candleEl.addEventListener('click', onFlameTap, { passive: true });
 
-  // --------------------------
-  // Scene 4: Envelope Toggle
-  // --------------------------
   const envelopeBtn = $('#envelope');
   envelopeBtn.addEventListener('click', (e) => {
     if (envelopeBtn.classList.contains('open')) {
@@ -221,48 +167,35 @@
     envelopeBtn.classList.add('open');
   });
 
-  // --------------------------
-  // Scene 5: Credits Control
-  // --------------------------
-  function resetCredits() {
-    const roll = $('#creditsRoll');
-    roll.style.animation = 'none';
-    // Trigger reflow
-    void roll.offsetHeight;
-    roll.style.animation = null;
+  $('#startBtn').addEventListener('click', () => { startMusic(); setScene(1); });
+  $('#openSurpriseBtn').addEventListener('click', () => { setScene(2); });
+  continueBtn.addEventListener('click', () => { if (!candleOut) return; setScene(3); });
+  $('#nextBtn').addEventListener('click', () => setScene(4));
+  $('#restartBtn').addEventListener('click', () => { setScene(0); });
+
+  const giftLayer = $('#giftLayer');
+  let giftsEnabled = true;
+  function makeGiftEl() {
+    const el = document.createElement('div');
+    el.className = 'gift';
+    const size = Math.random() * 26 + 18;
+    el.style.width = `${size}px`;
+    el.style.height = `${size}px`;
+    el.style.left = `${Math.random() * 100}%`;
+    el.style.top = `${100 + Math.random() * 30}%`;
+    el.style.opacity = `${0.18 + Math.random() * 0.20}`;
+    const dur = 9 + Math.random() * 10;
+    const drift = (Math.random() * 2 - 1) * 18;
+    el.style.setProperty('--dur', `${dur}s`);
+    el.style.setProperty('--drift', `${drift}px`);
+    return el;
   }
 
-  // --------------------------
-  // Button Event Listeners
-  // --------------------------
-  $('#startBtn').addEventListener('click', () => {
-    startMusic();
-    nextScene();
-  });
-
-  $('#memoriesNextBtn').addEventListener('click', () => nextScene());
-  $('#saturnNextBtn').addEventListener('click', () => nextScene());
-  
-  continueBtn.addEventListener('click', () => {
-    if (!candleOut) return;
-    nextScene();
-  });
-
-  $('#creditsBtn').addEventListener('click', () => nextScene());
-
-  $('#replayBtn').addEventListener('click', () => {
-    setScene(0);
-  });
-
-  // --------------------------
-  // Floating Particle Gifts Layer Fallback
-  // --------------------------
-  const giftLayer = $('#giftLayer');
   function initGiftFallback() {
     const css = document.createElement('style');
     css.textContent = `
-      #giftLayer .gift {
-        position: absolute;
+      #giftLayer .gift{
+        position:absolute;
         border-radius: 8px;
         background:
           linear-gradient(180deg, rgba(255,255,255,0.28), transparent 45%),
@@ -272,50 +205,63 @@
         transform: translate(-50%, 0);
         animation: floatGift var(--dur) linear infinite;
       }
-      @keyframes floatGift {
-        0% { transform: translate(-50%, 0) translateX(0px); }
-        100% { transform: translate(-50%, -140vh) translateX(var(--drift)); }
+      #giftLayer .gift::before{
+        content:""; position:absolute; inset:0; border-radius:8px;
+        background: linear-gradient(90deg, transparent 0 42%, rgba(255,255,255,0.22) 42% 58%, transparent 58% 100%);
+        opacity:0.9;
+      }
+      #giftLayer .gift::after{
+        content:""; position:absolute; left:50%; top:-8px;
+        transform: translateX(-50%); width:46%; height:14px;
+        border-radius:999px;
+        background: linear-gradient(135deg, rgba(77,124,255,0.75), rgba(255,63,180,0.55));
+        border:1px solid rgba(255,255,255,0.14); opacity:0.9;
+      }
+      @keyframes floatGift{
+        0%{ transform: translate(-50%, 0) translateX(0px); }
+        100%{ transform: translate(-50%, -140vh) translateX(var(--drift)); }
       }
     `;
     document.head.appendChild(css);
-
-    for (let i = 0; i < 12; i++) {
-      const el = document.createElement('div');
-      el.className = 'gift';
-      const size = Math.random() * 22 + 16;
-      el.style.width = `${size}px`;
-      el.style.height = `${size}px`;
+    for (let i = 0; i < 14; i++) giftLayer.appendChild(makeGiftEl());
+    giftLayer.addEventListener('animationiteration', (e) => {
+      const el = e.target;
+      if (!(el instanceof HTMLElement)) return;
+      if (!el.classList.contains('gift')) return;
       el.style.left = `${Math.random() * 100}%`;
-      el.style.top = `${100 + Math.random() * 30}%`;
-      el.style.opacity = `${0.15 + Math.random() * 0.20}`;
-      el.style.setProperty('--dur', `${10 + Math.random() * 10}s`);
-      el.style.setProperty('--drift', `${(Math.random() * 2 - 1) * 20}px`);
-      giftLayer.appendChild(el);
-    }
+      el.style.opacity = `${0.16 + Math.random() * 0.22}`;
+      el.style.setProperty('--drift', `${(Math.random() * 2 - 1) * 18}px`);
+    });
   }
+
+  function attachGiftAnimationFromLink(url) {
+    giftsEnabled = false;
+    giftLayer.innerHTML = '';
+    const note = document.createElement('div');
+    note.style.cssText = 'position:absolute; inset:0; display:none;';
+    note.dataset.giftUrl = url;
+    giftLayer.appendChild(note);
+  }
+  window.attachGiftAnimationFromLink = attachGiftAnimationFromLink;
   initGiftFallback();
 
-  // --------------------------
-  // Fireworks & Starfield Canvas Engine
-  // --------------------------
   const canvas = $('#fxCanvas');
   const ctx = canvas.getContext('2d', { alpha: true });
-
   const fx = (() => {
     let w = 0, h = 0, dpr = 1;
     let last = now();
     const stars = [];
+    const STAR_COUNT_BASE = 140;
     const rockets = [];
     const particles = [];
-
+    const smokes = [];
     let intensity = 0.05;
     let spawnAcc = 0;
-
     const palette = [
       { r: 170, g: 110, b: 255 },
       { r: 110, g: 160, b: 255 },
       { r: 255, g: 110, b: 220 },
-      { r: 235, g: 235, b: 255 }
+      { r: 235, g: 235, b: 255 },
     ];
 
     function resize() {
@@ -324,80 +270,80 @@
       h = Math.floor(window.innerHeight * dpr);
       canvas.width = w;
       canvas.height = h;
-
       stars.length = 0;
-      const count = Math.floor(150 * (w * h) / (900 * 700));
+      const count = Math.floor(STAR_COUNT_BASE * (w * h) / (900 * 700));
       for (let i = 0; i < count; i++) {
         stars.push({
-          x: Math.random() * w,
-          y: Math.random() * h,
-          z: Math.random(),
-          r: (Math.random() * 1.2 + 0.25) * dpr,
-          tw: Math.random() * Math.PI * 2,
-          tws: 0.7 + Math.random() * 1.8,
-          a: 0.15 + Math.random() * 0.55
+          x: Math.random() * w, y: Math.random() * h,
+          z: Math.random() * 1, r: (Math.random() * 1.2 + 0.25) * dpr,
+          tw: Math.random() * Math.PI * 2, tws: 0.7 + Math.random() * 1.8,
+          a: 0.15 + Math.random() * 0.55,
         });
       }
     }
-
-    function setIntensity(v) {
-      intensity = clamp(v, 0, 1);
-    }
+    function setIntensity(v) { intensity = clamp(v, 0, 1); }
 
     function launchRocket() {
       const x = (Math.random() * 0.9 + 0.05) * w;
       const y = h + 10 * dpr;
       const z = 0.35 + Math.random() * 0.65;
       const speed = (6.2 + Math.random() * 2.6) * dpr * (0.85 + 0.35 * (1 - z));
+      const vx = (Math.random() * 2 - 1) * 0.6 * dpr;
+      const vy = -speed;
       const targetY = (Math.random() * 0.45 + 0.12) * h;
       const color = palette[(Math.random() * palette.length) | 0];
-
-      rockets.push({ x, y, z, vx: (Math.random() * 2 - 1) * 0.6 * dpr, vy: -speed, targetY, life: 0, color });
+      rockets.push({ x, y, z, vx, vy, targetY, life: 0, color, trail: [] });
     }
 
     function burst(x, y, z, baseColor) {
-      const count = Math.floor(65 + Math.random() * 55);
-      const spread = 2.4 + Math.random() * 1.8;
+      const count = Math.floor(70 + Math.random() * 60);
+      const spread = 2.2 + Math.random() * 1.8;
       for (let i = 0; i < count; i++) {
         const ang = Math.random() * Math.PI * 2;
         const mag = (Math.random() ** 0.45) * spread * dpr * (0.55 + 0.75 * z);
+        const hueShift = (Math.random() * 0.24 - 0.12);
         const col = (Math.random() < 0.7) ? baseColor : palette[(Math.random() * palette.length) | 0];
         particles.push({
           x, y, z,
-          vx: Math.cos(ang) * mag,
-          vy: Math.sin(ang) * mag,
+          vx: Math.cos(ang) * mag, vy: Math.sin(ang) * mag,
           drag: 0.985 - Math.random() * 0.01,
           g: (0.045 + Math.random() * 0.035) * dpr,
-          life: 0,
-          maxLife: (42 + Math.random() * 28) * (0.9 + 0.6 * z),
-          r: (1.2 + Math.random() * 1.8) * dpr,
-          col
+          life: 0, maxLife: (42 + Math.random() * 28) * (0.9 + 0.6 * z),
+          r: (1.1 + Math.random() * 1.8) * dpr * (0.75 + 0.85 * z),
+          col, hueShift, sparkle: Math.random() < 0.16, trail: [],
         });
       }
+      smokes.push({
+        x, y, z, r: (22 + Math.random() * 18) * dpr * (0.7 + 0.8 * z),
+        a: 0.14, life: 0, maxLife: 56 + Math.random() * 30
+      });
     }
 
-    function celebrationBurst() {
-      for (let i = 0; i < 5; i++) {
-        setTimeout(() => {
-          burst(
-            (0.2 + Math.random() * 0.6) * w,
-            (0.2 + Math.random() * 0.4) * h,
-            0.8,
-            palette[i % palette.length]
-          );
-        }, i * 180);
-      }
+    function puffAtCenter() {
+      const x = w * 0.5 + (Math.random() * 2 - 1) * 18 * dpr;
+      const y = h * 0.5 + 60 * dpr;
+      smokes.push({ x, y, z: 0.65, r: 26 * dpr, a: 0.18, life: 0, maxLife: 70 });
     }
 
     function drawStars(t) {
       ctx.save();
+      ctx.globalCompositeOperation = 'source-over';
       for (const s of stars) {
         const tw = 0.55 + 0.45 * Math.sin(s.tw + t * 0.001 * s.tws);
         const alpha = s.a * tw;
-        ctx.fillStyle = `rgba(220,230,255,${alpha})`;
         ctx.beginPath();
-        ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(220,230,255,${alpha})`;
+        ctx.arc(s.x, s.y, s.r * (0.85 + 0.35 * s.z), 0, Math.PI * 2);
         ctx.fill();
+        if (tw > 0.92 && s.z > 0.7) {
+          ctx.globalAlpha = alpha * 0.55;
+          ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+          ctx.lineWidth = 0.8 * dpr;
+          ctx.beginPath();
+          ctx.moveTo(s.x - 3.2 * dpr, s.y); ctx.lineTo(s.x + 3.2 * dpr, s.y);
+          ctx.moveTo(s.x, s.y - 3.2 * dpr); ctx.lineTo(s.x, s.y + 3.2 * dpr);
+          ctx.stroke(); ctx.globalAlpha = 1;
+        }
       }
       ctx.restore();
     }
@@ -405,69 +351,103 @@
     function tick(t) {
       const dt = clamp((t - last) / 16.6667, 0.2, 2.2);
       last = t;
-
-      ctx.fillStyle = 'rgba(5, 3, 12, 0.2)';
+      ctx.save();
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = `rgba(5, 3, 12, ${0.18})`;
       ctx.fillRect(0, 0, w, h);
-
+      ctx.restore();
       drawStars(t);
-
       spawnAcc += dt * (0.015 + 0.055 * intensity);
-      while (spawnAcc > 1) {
-        spawnAcc -= 1;
-        if (intensity > 0.08) launchRocket();
-      }
+      while (spawnAcc > 1) { spawnAcc -= 1; if (intensity > 0.08) launchRocket(); }
 
-      // Update & Draw Rockets
       for (let i = rockets.length - 1; i >= 0; i--) {
         const r = rockets[i];
         r.life += dt;
-        r.x += r.vx * dt;
-        r.y += r.vy * dt;
-
-        ctx.fillStyle = `rgba(${r.color.r},${r.color.g},${r.color.b},0.8)`;
-        ctx.beginPath();
-        ctx.arc(r.x, r.y, 2 * dpr, 0, Math.PI * 2);
-        ctx.fill();
-
-        if (r.y <= r.targetY || r.life > 70) {
-          burst(r.x, r.y, r.z, r.color);
-          rockets.splice(i, 1);
-        }
+        r.trail.push({ x: r.x, y: r.y });
+        if (r.trail.length > 14) r.trail.shift();
+        r.x += r.vx * dt; r.y += r.vy * dt;
+        r.vx *= 0.995; r.vy *= 0.998;
+        r.vx += Math.sin((t * 0.001) + r.life) * 0.01 * dpr;
+        if (r.y <= r.targetY || r.life > 70) { burst(r.x, r.y, r.z, r.color); rockets.splice(i, 1); }
       }
 
-      // Update & Draw Particles
-      ctx.save();
-      ctx.globalCompositeOperation = 'lighter';
       for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i];
         p.life += dt;
-        p.vx *= p.drag;
-        p.vy *= p.drag;
-        p.vy += p.g * dt;
-        p.x += p.vx * dt;
-        p.y += p.vy * dt;
+        p.trail.push({ x: p.x, y: p.y });
+        if (p.trail.length > 10) p.trail.shift();
+        p.vx *= p.drag; p.vy *= p.drag;
+        p.vy += p.g * dt; p.x += p.vx * dt; p.y += p.vy * dt;
+        if (p.life > p.maxLife) particles.splice(i, 1);
+      }
 
-        const fade = 1 - (p.life / p.maxLife);
-        if (fade <= 0) {
-          particles.splice(i, 1);
-          continue;
+      for (let i = smokes.length - 1; i >= 0; i--) {
+        smokes[i].life += dt;
+        if (smokes[i].life > smokes[i].maxLife) smokes.splice(i, 1);
+      }
+
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+
+      for (const r of rockets) {
+        for (let i = 0; i < r.trail.length - 1; i++) {
+          const a = i / r.trail.length;
+          ctx.strokeStyle = `rgba(${r.color.r},${r.color.g},${r.color.b},${0.08 + a * 0.14})`;
+          ctx.lineWidth = (1.2 + a * 1.8) * dpr * (0.7 + 0.8 * r.z);
+          ctx.beginPath();
+          ctx.moveTo(r.trail[i].x, r.trail[i].y);
+          ctx.lineTo(r.trail[i + 1].x, r.trail[i + 1].y);
+          ctx.stroke();
         }
-
-        ctx.fillStyle = `rgba(${p.col.r},${p.col.g},${p.col.b},${fade})`;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.r * fade, 0, Math.PI * 2);
-        ctx.fill();
+        const glow = 10 * dpr * (0.7 + 0.9 * r.z);
+        const g = ctx.createRadialGradient(r.x, r.y, 0, r.x, r.y, glow);
+        g.addColorStop(0, `rgba(${r.color.r},${r.color.g},${r.color.b},0.60)`);
+        g.addColorStop(1, `rgba(${r.color.r},${r.color.g},${r.color.b},0.00)`);
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(r.x, r.y, glow, 0, Math.PI * 2); ctx.fill();
       }
+
+      for (const p of particles) {
+        const life01 = clamp(p.life / p.maxLife, 0, 1);
+        const fade = 1 - life01;
+        for (let i = 0; i < p.trail.length - 1; i++) {
+          const a = i / p.trail.length;
+          const alpha = (0.06 + a * 0.10) * fade;
+          ctx.strokeStyle = `rgba(${p.col.r},${p.col.g},${p.col.b},${alpha})`;
+          ctx.lineWidth = (0.8 + a * 1.2) * dpr * (0.65 + 0.9 * p.z);
+          ctx.beginPath();
+          ctx.moveTo(p.trail[i].x, p.trail[i].y);
+          ctx.lineTo(p.trail[i + 1].x, p.trail[i + 1].y);
+          ctx.stroke();
+        }
+        const flick = p.sparkle ? (0.65 + 0.35 * Math.sin((t * 0.02) + p.life)) : 1.0;
+        const alpha = (0.22 + 0.45 * fade) * flick;
+        ctx.fillStyle = `rgba(${p.col.r},${p.col.g},${p.col.b},${alpha})`;
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.r * (0.7 + 0.6 * fade), 0, Math.PI * 2); ctx.fill();
+        const glowR = p.r * (3.2 + 3.2 * fade);
+        const gg = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, glowR);
+        gg.addColorStop(0, `rgba(${p.col.r},${p.col.g},${p.col.b},${0.16 * fade})`);
+        gg.addColorStop(1, `rgba(${p.col.r},${p.col.g},${p.col.b},0)`);
+        ctx.fillStyle = gg;
+        ctx.beginPath(); ctx.arc(p.x, p.y, glowR, 0, Math.PI * 2); ctx.fill();
+      }
+
+      for (const s of smokes) {
+        const life01 = clamp(s.life / s.maxLife, 0, 1);
+        const fade = 1 - life01;
+        const radius = s.r * (0.7 + 1.25 * life01);
+        const g = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, radius);
+        g.addColorStop(0, `rgba(220,220,255,${s.a * fade})`);
+        g.addColorStop(1, `rgba(220,220,255,0)`);
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(s.x, s.y, radius, 0, Math.PI * 2); ctx.fill();
+      }
+
       ctx.restore();
-
-      if (sceneIndex === 3 && !candleOut) {
-        sampleMicAndDetectBlow(t);
-      }
-
+      if (sceneIndex === 2 && !candleOut) sampleMicAndDetectBlow(t);
       requestAnimationFrame(tick);
     }
-
-    return { resize, tick, setIntensity, celebrationBurst };
+    return { resize, tick, setIntensity, puffAtCenter };
   })();
 
   function boot() {
@@ -476,9 +456,8 @@
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     requestAnimationFrame(fx.tick);
   }
-
   window.addEventListener('resize', () => fx.resize(), { passive: true });
-
   setScene(0);
+  setCandleOut(candleOut);
   boot();
 })();
